@@ -7,6 +7,7 @@
 #include "interface.h"
 #include "../audio/audio_engine.h"
 #include "../audio/synthesizer.h"
+#include "../audio/mixer.h"
 #include "../instruments/piano.h"
 #include "../instruments/drums.h"
 #include "../instruments/guitar.h"
@@ -153,7 +154,7 @@ static void guitar_menu(Guitar *guitar, AudioEngine *engine) {
 }
 
 // Lancer l'interface utilisateur
-void ui_run(struct AudioEngine *engine) {
+void ui_run(AudioEngine *engine) {
     if (!engine) return;
     
     // Créer les instruments

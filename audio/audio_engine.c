@@ -111,7 +111,7 @@ int audio_engine_get_buffer_size(AudioEngine *engine) {
     return engine ? engine->buffer_size : 0;
 }
 
-// Obtenir le mixeur
-Mixer *audio_engine_get_mixer(AudioEngine *engine) {
-    return engine ? (Mixer *)engine->mixer : NULL;
+// Obtenir le mixeur (retourne void* pour éviter les dépendances)
+void *audio_engine_get_mixer(AudioEngine *engine) {
+    return engine ? engine->mixer : NULL;
 }

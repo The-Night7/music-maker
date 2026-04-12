@@ -1,10 +1,10 @@
 #ifndef INTERFACE_H
 #define INTERFACE_H
 
-// Déclaration forward - évite les conflits si audio_engine.h est inclus
-struct AudioEngine;
+// Forward declaration uniquement - la vraie déclaration est dans audio_engine.h
+typedef struct AudioEngine AudioEngine;
 
 // Fonction principale de l'interface
-void ui_run(struct AudioEngine *engine);
+void ui_run(AudioEngine *engine);
 
 #endif // INTERFACE_H

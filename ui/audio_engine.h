@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+// Déclaration forward et typedef
+typedef struct AudioEngine AudioEngine;
+
 typedef struct {
     float frequency;
     float amplitude;
@@ -10,14 +13,15 @@ typedef struct {
     int sample_rate;
 } Oscillator;
 
-typedef struct AudioEngine {
+// Définition complète de la structure AudioEngine
+struct AudioEngine {
     int sample_rate;
     int channels;
     int buffer_size;
     float *audio_buffer;
     int is_running;
     void *mixer; // Pointeur vers le mixeur
-} AudioEngine;
+};
 
 // Fonctions du moteur audio
 AudioEngine *audio_engine_create(void);
@@ -26,8 +30,5 @@ int audio_engine_start(AudioEngine *engine);
 int audio_engine_stop(AudioEngine *engine);
 void audio_engine_process(AudioEngine *engine);
 void audio_engine_add_track(AudioEngine *engine, void *track);
-int audio_engine_get_sample_rate(AudioEngine *engine);
-int audio_engine_get_buffer_size(AudioEngine *engine);
-void *audio_engine_get_mixer(AudioEngine *engine);
 
 #endif // AUDIO_ENGINE_H
