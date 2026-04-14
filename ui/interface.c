@@ -4,6 +4,9 @@
 #include <unistd.h>
 #include <ctype.h>
 
+/* Portabilité: définir _DEFAULT_SOURCE pour accéder à usleep() */
+#define _DEFAULT_SOURCE 1
+
 #include "interface.h"
 #include "../audio/audio_engine.h"
 #include "../audio/synthesizer.h"

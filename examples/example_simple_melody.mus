@@ -1,0 +1,23 @@
+# Exemple 1: Simple Mélodie Do Ré Mi
+# Format: note durée [vélocité]
+
+[METADATA]
+titre: Do Ré Mi
+auteur: Exemple Simple
+tempo: 120
+signature_temps: 4/4
+
+[INSTRUMENT: PIANO]
+volume: 0.8
+pan: 0.0
+
+[NOTES]
+# La gamme majeure ascendante
+C4 1      # Do 4
+D4 1      # Ré 4
+E4 1      # Mi 4
+F4 1      # Fa 4
+G4 1      # Sol 4
+A4 1      # La 4
+B4 1      # Si 4
+C5 2      # Do 5 (plus long)

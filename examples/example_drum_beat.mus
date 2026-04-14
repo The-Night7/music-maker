@@ -1,0 +1,30 @@
+# Exemple 2: Rythme Batterie
+# K = Kick, S = Snare, H = Hi-hat
+
+[METADATA]
+titre: Drum Beat
+tempo: 100
+signature_temps: 4/4
+
+[INSTRUMENT: DRUMS]
+volume: 0.9
+
+[NOTES]
+K 1      # Kick sur temps 1
+H 0.5    # Hi-hat fermé
+S 0.5    # Snare
+H 0.5    # Hi-hat fermé
+K 1      # Kick
+H 0.5    # Hi-hat fermé
+K 0.5    # Kick
+S 1      # Snare
+
+# Répéter le motif
+K 1
+H 0.5
+S 0.5
+H 0.5
+K 1
+H 0.5
+K 0.5
+S 1

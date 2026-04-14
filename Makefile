@@ -1,7 +1,7 @@
 # Makefile pour l'application musicale multi-instruments en C
 
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -O2 -fPIC
+CFLAGS = -Wall -Wextra -std=c99 -O2 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 LDFLAGS = -lm
 
 # Répertoires
@@ -18,18 +18,20 @@ AUDIO_SOURCES = $(AUDIO_DIR)/audio_engine.c $(AUDIO_DIR)/synthesizer.c $(AUDIO_D
 INSTRUMENTS_SOURCES = $(INSTRUMENTS_DIR)/piano.c $(INSTRUMENTS_DIR)/drums.c $(INSTRUMENTS_DIR)/guitar.c
 UI_SOURCES = $(UI_DIR)/interface.c
 UTILS_SOURCES = $(UTILS_DIR)/wave.c
+PARSER_SOURCES = parser.c music_player.c
 MAIN_SOURCE = main.c
 
-ALL_SOURCES = $(MAIN_SOURCE) $(AUDIO_SOURCES) $(INSTRUMENTS_SOURCES) $(UI_SOURCES) $(UTILS_SOURCES)
+ALL_SOURCES = $(MAIN_SOURCE) $(AUDIO_SOURCES) $(INSTRUMENTS_SOURCES) $(UI_SOURCES) $(UTILS_SOURCES) $(PARSER_SOURCES)
 
 # Fichiers objets
 AUDIO_OBJECTS = $(BUILD_DIR)/audio_engine.o $(BUILD_DIR)/synthesizer.o $(BUILD_DIR)/mixer.o
 INSTRUMENTS_OBJECTS = $(BUILD_DIR)/piano.o $(BUILD_DIR)/drums.o $(BUILD_DIR)/guitar.o
 UI_OBJECTS = $(BUILD_DIR)/interface.o
 UTILS_OBJECTS = $(BUILD_DIR)/wave.o
+PARSER_OBJECTS = $(BUILD_DIR)/parser.o $(BUILD_DIR)/music_player.o
 MAIN_OBJECT = $(BUILD_DIR)/main.o
 
-ALL_OBJECTS = $(MAIN_OBJECT) $(AUDIO_OBJECTS) $(INSTRUMENTS_OBJECTS) $(UI_OBJECTS) $(UTILS_OBJECTS)
+ALL_OBJECTS = $(MAIN_OBJECT) $(AUDIO_OBJECTS) $(INSTRUMENTS_OBJECTS) $(UI_OBJECTS) $(UTILS_OBJECTS) $(PARSER_OBJECTS)
 
 # Cibles
 TARGET = $(BIN_DIR)/music_app
@@ -85,6 +87,15 @@ $(BUILD_DIR)/interface.o: $(UI_DIR)/interface.c $(UI_DIR)/interface.h | $(BUILD_
 $(BUILD_DIR)/wave.o: $(UTILS_DIR)/wave.c $(UTILS_DIR)/wave.h | $(BUILD_DIR)
 	@echo "[CC] $(UTILS_DIR)/wave.c"
 	$(CC) $(CFLAGS) -c $(UTILS_DIR)/wave.c -o $@
+
+# Règles pour parser
+$(BUILD_DIR)/parser.o: parser.c parser.h | $(BUILD_DIR)
+	@echo "[CC] parser.c"
+	$(CC) $(CFLAGS) -c parser.c -o $@
+
+$(BUILD_DIR)/music_player.o: music_player.c music_player.h parser.h | $(BUILD_DIR)
+	@echo "[CC] music_player.c"
+	$(CC) $(CFLAGS) -c music_player.c -o $@
 
 # Créer les répertoires de build
 $(BUILD_DIR):

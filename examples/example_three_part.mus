@@ -1,0 +1,47 @@
+# Exemple 3: Composition à 3 Instruments
+# Piano + Guitar + Drums
+
+[METADATA]
+titre: Harmony
+tempo: 120
+signature_temps: 4/4
+
+# INSTRUMENT 1: PIANO - Mélodie principale
+[INSTRUMENT: PIANO]
+volume: 0.7
+pan: -0.3
+
+[NOTES]
+C4 1
+D4 1
+E4 1
+F4 1
+G4 2
+pause 1
+C4 1
+
+# INSTRUMENT 2: GUITAR - Accompagnement
+[INSTRUMENT: GUITAR]
+volume: 0.6
+pan: 0.3
+
+[NOTES]
+G3 2
+A3 2
+B3 2
+C4 2
+
+# INSTRUMENT 3: DRUMS - Rythme
+[INSTRUMENT: DRUMS]
+volume: 0.8
+pan: 0.0
+
+[NOTES]
+K 1
+H 0.5
+S 0.5
+H 0.5
+K 1
+H 0.5
+K 0.5
+S 1
