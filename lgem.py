@@ -3,364 +3,347 @@ import numpy as np
 import wave
 import struct
 
-# ─── Paramètres globaux ───────────────────────────────────────────────────────
 SAMPLE_RATE = 44100
 BPM = 70
-BEAT = 60.0 / BPM          # durée d'un temps en secondes
-BAR  = BEAT * 4             # durée d'une mesure
+BEAT = 60.0 / BPM  # durée d'un temps en secondes
 
-# ─── Utilitaires fréquences ───────────────────────────────────────────────────
-NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+def adsr(length, sr, attack=0.08, decay=0.1, sustain=0.7, release=0.15):
+    n = int(length * sr)
+    env = np.zeros(n)
+    a = int(attack * sr)
+    d = int(decay * sr)
+    r = int(release * sr)
+    s_end = n - r
+    if a > 0:
+        env[:a] = np.linspace(0, 1, a)
+    if d > 0 and a + d < n:
+        env[a:a+d] = np.linspace(1, sustain, d)
+    if s_end > a + d:
+        env[a+d:s_end] = sustain
+    if r > 0:
+        env[s_end:] = np.linspace(sustain, 0, n - s_end)
+    return env
 
-def freq(note, octave):
-    n = NOTE_NAMES.index(note)
-    midi = (octave + 1) * 12 + n
-    return 440.0 * (2 ** ((midi - 69) / 12.0))
-
-# Accords de base (Dm, Bb, F, C, Gm, A)
-CHORDS = {
-    'Dm': [freq('D',4), freq('F',4), freq('A',4)],
-    'Bb': [freq('A#',3), freq('D',4), freq('F',4)],
-    'F':  [freq('F',3), freq('A',3), freq('C',4)],
-    'C':  [freq('C',4), freq('E',4), freq('G',4)],
-    'Gm': [freq('G',3), freq('A#',3), freq('D',4)],
-    'A':  [freq('A',3), freq('C#',4), freq('E',4)],
-}
-
-# ─── Générateurs d'onde ───────────────────────────────────────────────────────
-def sine(f, dur, amp=0.5, sr=SAMPLE_RATE):
-    t = np.linspace(0, dur, int(sr*dur), False)
-    return amp * np.sin(2*np.pi*f*t)
-
-def square(f, dur, amp=0.3, sr=SAMPLE_RATE):
-    t = np.linspace(0, dur, int(sr*dur), False)
-    return amp * np.sign(np.sin(2*np.pi*f*t))
-
-def sawtooth(f, dur, amp=0.3, sr=SAMPLE_RATE):
-    t = np.linspace(0, dur, int(sr*dur), False)
-    return amp * (2*(t*f - np.floor(t*f+0.5)))
-
-def silence(dur, sr=SAMPLE_RATE):
-    return np.zeros(int(sr*dur))
-
-def adsr(sig, sr=SAMPLE_RATE, a=0.05, d=0.1, s=0.7, r=0.15):
-    n = len(sig)
-    env = np.ones(n)
-    na, nd, nr = int(a*sr), int(d*sr), int(r*sr)
-    ns = n - na - nd - nr
-    if ns < 0: ns = 0
-    env[:na] = np.linspace(0, 1, na)
-    env[na:na+nd] = np.linspace(1, s, nd)
-    env[na+nd:na+nd+ns] = s
-    env[na+nd+ns:] = np.linspace(s, 0, n-(na+nd+ns))
-    return sig * env
-
-def fade(sig, sr=SAMPLE_RATE, fade_in=0.0, fade_out=0.5):
-    n = len(sig)
-    env = np.ones(n)
-    if fade_in > 0:
-        ni = int(fade_in*sr)
-        env[:ni] = np.linspace(0,1,ni)
-    if fade_out > 0:
-        no = int(fade_out*sr)
-        env[n-no:] = np.linspace(1,0,no)
-    return sig * env
-
-# ─── Instruments ─────────────────────────────────────────────────────────────
-
-def piano_arpeggio(chord_name, dur, amp=0.22):
-    """Piano feutré : arpège rapide continu (comme une trotteuse)"""
-    notes = CHORDS[chord_name]
-    # on étend sur 2 octaves
-    notes_ext = [n/2 for n in notes] + notes + [n*2 for n in notes[:2]]
-    note_dur = BEAT / 3   # triolets rapides
-    buf = []
-    t = 0
-    idx = 0
-    while t < dur:
-        nd = min(note_dur, dur - t)
-        s = sine(notes_ext[idx % len(notes_ext)], nd, amp)
-        s = adsr(s, a=0.01, d=0.05, s=0.6, r=0.1)
-        buf.append(s)
-        t += note_dur
-        idx += 1
-    return np.concatenate(buf)[:int(SAMPLE_RATE*dur)]
-
-def piano_slow(chord_name, dur, amp=0.28):
-    """Piano lent pour l'outro"""
-    notes = CHORDS[chord_name]
-    note_dur = BEAT
-    buf = []
-    t = 0
-    idx = 0
-    while t < dur:
-        nd = min(note_dur * 0.85, dur - t)
-        s = sine(notes[idx % len(notes)], nd, amp)
-        s = adsr(s, a=0.02, d=0.1, s=0.65, r=0.2)
-        buf.append(s)
-        buf.append(silence(note_dur * 0.15))
-        t += note_dur
-        idx += 1
-    return np.concatenate(buf)[:int(SAMPLE_RATE*dur)]
-
-def cello(f, dur, amp=0.35, gritty=False):
-    """Violoncelle : onde sinusoïdale + harmoniques, longues notes étirées"""
-    t = np.linspace(0, dur, int(SAMPLE_RATE*dur), False)
-    # fondamentale + harmoniques
-    sig = amp * (
-        0.6 * np.sin(2*np.pi*f*t) +
-        0.25 * np.sin(2*np.pi*f*2*t) +
-        0.1 * np.sin(2*np.pi*f*3*t) +
-        0.05 * np.sin(2*np.pi*f*4*t)
+def piano_tone(freq, duration, sr=SAMPLE_RATE, velocity=0.6):
+    """Son de piano acoustique simulé avec harmoniques et decay naturel"""
+    t = np.linspace(0, duration, int(sr * duration), False)
+    # Harmoniques du piano
+    wave_out = (
+        np.sin(2 * np.pi * freq * t) * 1.0 +
+        np.sin(2 * np.pi * freq * 2 * t) * 0.5 +
+        np.sin(2 * np.pi * freq * 3 * t) * 0.25 +
+        np.sin(2 * np.pi * freq * 4 * t) * 0.12 +
+        np.sin(2 * np.pi * freq * 5 * t) * 0.06 +
+        np.sin(2 * np.pi * freq * 6 * t) * 0.03
     )
-    if gritty:
-        # légère distorsion pour le pré-refrain
-        sig += 0.04 * np.sign(sig) * np.abs(sig)**0.5
-    # vibrato lent
-    vibrato = 1 + 0.008 * np.sin(2*np.pi*4.5*t)
-    sig = sig * vibrato
-    return adsr(sig, a=0.3, d=0.2, s=0.8, r=0.4)
+    # Decay exponentiel naturel du piano
+    decay_env = np.exp(-t * (2.5 + freq / 800))
+    # Légère attaque percussive
+    attack_env = 1 - np.exp(-t * 80)
+    env = attack_env * decay_env
+    # Légère variation aléatoire pour humaniser
+    noise = np.random.normal(0, 0.002, len(t))
+    return (wave_out * env * velocity + noise) * 0.3
 
-def bass_note(f, dur, amp=0.30):
-    """Basse sawtooth grave"""
-    sig = sawtooth(f/2, dur, amp)
-    return adsr(sig, a=0.02, d=0.08, s=0.7, r=0.1)
+def cello_tone(freq, duration, sr=SAMPLE_RATE, velocity=0.5):
+    """Son de violoncelle avec vibrato et harmoniques riches"""
+    t = np.linspace(0, duration, int(sr * duration), False)
+    # Vibrato naturel (légèrement irrégulier)
+    vibrato_rate = 4.5 + np.random.uniform(-0.3, 0.3)
+    vibrato_depth = 0.012
+    vibrato = 1 + vibrato_depth * np.sin(2 * np.pi * vibrato_rate * t)
+    # Harmoniques du violoncelle (riches en harmoniques impaires)
+    wave_out = (
+        np.sin(2 * np.pi * freq * vibrato * t) * 1.0 +
+        np.sin(2 * np.pi * freq * 2 * vibrato * t) * 0.6 +
+        np.sin(2 * np.pi * freq * 3 * vibrato * t) * 0.4 +
+        np.sin(2 * np.pi * freq * 4 * vibrato * t) * 0.2 +
+        np.sin(2 * np.pi * freq * 5 * vibrato * t) * 0.1
+    )
+    # Envelope ADSR lente (archet)
+    env = adsr(duration, sr, attack=0.3, decay=0.1, sustain=0.8, release=0.4)
+    noise = np.random.normal(0, 0.003, len(t))
+    return (wave_out * env * velocity + noise) * 0.25
 
-def pad_chord(chord_name, dur, amp=0.12, dissonant=False):
-    """Nappe de synthé ambiante"""
-    notes = CHORDS[chord_name]
-    sig = silence(dur)
-    for i, n in enumerate(notes):
-        t = np.linspace(0, dur, int(SAMPLE_RATE*dur), False)
-        wave_ = amp * np.sin(2*np.pi*n*t + i*0.15)
-        if dissonant:
-            # légère dissonance : +7 cents
-            wave_ += (amp*0.3) * np.sin(2*np.pi*n*1.004*t)
-        sig = sig + adsr(wave_, a=0.4, d=0.3, s=0.6, r=0.5)
-    return sig
+def soft_bass(freq, duration, sr=SAMPLE_RATE, velocity=0.4):
+    """Basse acoustique douce"""
+    t = np.linspace(0, duration, int(sr * duration), False)
+    wave_out = (
+        np.sin(2 * np.pi * freq * t) * 1.0 +
+        np.sin(2 * np.pi * freq * 2 * t) * 0.4 +
+        np.sin(2 * np.pi * freq * 3 * t) * 0.15
+    )
+    decay_env = np.exp(-t * 1.8)
+    attack_env = 1 - np.exp(-t * 40)
+    env = attack_env * decay_env
+    noise = np.random.normal(0, 0.001, len(t))
+    return (wave_out * env * velocity + noise) * 0.35
 
-def kick(dur=0.25, amp=0.55):
-    t = np.linspace(0, dur, int(SAMPLE_RATE*dur), False)
-    f_env = 180 * np.exp(-30*t)
-    sig = amp * np.sin(2*np.pi*f_env*t)
-    return adsr(sig, a=0.002, d=0.08, s=0.0, r=0.05)
+def warm_pad(freq, duration, sr=SAMPLE_RATE, velocity=0.3, dissonant=False):
+    """Nappe de synthé chaleureuse (ou légèrement dissonante)"""
+    t = np.linspace(0, duration, int(sr * duration), False)
+    detune = 1.003 if not dissonant else 1.012
+    wave_out = (
+        np.sin(2 * np.pi * freq * t) * 1.0 +
+        np.sin(2 * np.pi * freq * detune * t) * 0.8 +
+        np.sin(2 * np.pi * freq * 2 * t) * 0.3
+    )
+    env = adsr(duration, sr, attack=0.6, decay=0.2, sustain=0.7, release=0.8)
+    return wave_out * env * velocity * 0.2
 
-def snare(dur=0.18, amp=0.35):
-    t = np.linspace(0, dur, int(SAMPLE_RATE*dur), False)
-    noise = amp * np.random.randn(len(t))
-    tone = 0.15 * np.sin(2*np.pi*200*t)
-    sig = noise * np.exp(-18*t) + tone * np.exp(-25*t)
-    return sig * amp
+def soft_kick(duration=0.4, sr=SAMPLE_RATE):
+    """Kick de batterie acoustique doux"""
+    t = np.linspace(0, duration, int(sr * duration), False)
+    freq_env = 120 * np.exp(-t * 18) + 40
+    wave_out = np.sin(2 * np.pi * freq_env * t)
+    amp_env = np.exp(-t * 12)
+    noise = np.random.normal(0, 0.01, len(t)) * np.exp(-t * 30)
+    return (wave_out * amp_env + noise) * 0.5
 
-def hihat(dur=0.08, amp=0.15):
-    t = np.linspace(0, dur, int(SAMPLE_RATE*dur), False)
-    noise = np.random.randn(len(t))
-    sig = noise * np.exp(-40*t)
-    return sig * amp
+def soft_snare(duration=0.25, sr=SAMPLE_RATE):
+    """Caisse claire acoustique douce"""
+    t = np.linspace(0, duration, int(sr * duration), False)
+    tone = np.sin(2 * np.pi * 200 * t) * np.exp(-t * 20)
+    noise = np.random.normal(0, 1, len(t)) * np.exp(-t * 15)
+    env = np.exp(-t * 10)
+    return (tone * 0.3 + noise * 0.7) * env * 0.25
 
-def mix_at(buf, sig, pos):
-    """Mixe sig dans buf à la position pos (en samples)"""
-    end = pos + len(sig)
-    if end > len(buf):
-        sig = sig[:len(buf)-pos]
-    buf[pos:pos+len(sig)] += sig
+def brush_hihat(duration=0.1, sr=SAMPLE_RATE):
+    """Hihat brossé (très doux, humain)"""
+    t = np.linspace(0, duration, int(sr * duration), False)
+    noise = np.random.normal(0, 1, len(t))
+    # Filtre passe-haut simulé
+    env = np.exp(-t * 40)
+    return noise * env * 0.08
 
-# ─── Construction de la chanson ──────────────────────────────────────────────
+def note_freq(note, octave):
+    notes = {'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5,
+             'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11}
+    semitones = (octave - 4) * 12 + notes[note] - 9
+    return 440.0 * (2 ** (semitones / 12))
 
-# Progression d'accords par section
-PROG_VERSE   = ['Dm','Bb','F','C'] * 2   # 8 mesures
-PROG_CHORUS  = ['Bb','F','C','Dm'] * 2   # 8 mesures
-PROG_BRIDGE  = ['Gm','Dm','Bb','F','C','Dm','Bb','A']  # 8 mesures
-PROG_PRE     = ['Bb','F','C','Dm','Bb','F','C','Dm']   # 8 mesures
-PROG_OUTRO   = ['Dm','Bb','F','C','Gm','Bb','C','Dm']  # 8 mesures
-PROG_INTRO   = ['Dm','Bb','F','C']       # 4 mesures
-
-def bars_to_samples(n_bars):
-    return int(SAMPLE_RATE * BAR * n_bars)
-
-# Durée totale estimée
-sections = {
-    'intro':    4,
-    'verse1':   8,
-    'chorus1':  8,
-    'verse2':   8,
-    'pre':      8,
-    'chorus2':  8,
-    'bridge':   8,
-    'chorus3':  8,
-    'outro':    8,
+# Accords Dm, Bb, F, C, Gm, A
+CHORDS = {
+    'Dm': [note_freq('D', 4), note_freq('F', 4), note_freq('A', 4)],
+    'Bb': [note_freq('A#', 3), note_freq('D', 4), note_freq('F', 4)],
+    'F':  [note_freq('F', 3), note_freq('A', 3), note_freq('C', 4)],
+    'C':  [note_freq('C', 3), note_freq('E', 3), note_freq('G', 3)],
+    'Gm': [note_freq('G', 3), note_freq('A#', 3), note_freq('D', 4)],
+    'A':  [note_freq('A', 3), note_freq('C#', 4), note_freq('E', 4)],
 }
-total_bars = sum(sections.values())
-total_samples = bars_to_samples(total_bars)
 
-print(f"Durée totale : {total_bars} mesures = {total_bars*BAR:.1f}s = {total_bars*BAR/60:.1f} min")
+def mix_at(base, signal, pos):
+    end = pos + len(signal)
+    if end > len(base):
+        signal = signal[:len(base) - pos]
+    base[pos:pos + len(signal)] += signal
 
-song = np.zeros(total_samples)
+def arpeggio(chord_name, duration_beats, sr=SAMPLE_RATE, velocity=0.5, dissonant=False):
+    """Arpège de piano sur un accord"""
+    freqs = CHORDS[chord_name]
+    total = int(duration_beats * BEAT * sr)
+    out = np.zeros(total)
+    note_dur = BEAT * 0.5
+    step = int(BEAT * 0.25 * sr)
+    for i, freq in enumerate(freqs * 4):
+        pos = i * step
+        if pos >= total:
+            break
+        n = piano_tone(freq, note_dur, sr, velocity)
+        mix_at(out, n, pos)
+    return out
 
-# ─── Curseur de position ──────────────────────────────────────────────────────
-pos = 0  # en samples
+def chord_piano(chord_name, duration_beats, sr=SAMPLE_RATE, velocity=0.45):
+    """Accord plaqué au piano"""
+    freqs = CHORDS[chord_name]
+    total = int(duration_beats * BEAT * sr)
+    out = np.zeros(total)
+    for i, freq in enumerate(freqs):
+        offset = int(i * 0.03 * sr)  # léger étalement humain
+        n = piano_tone(freq, duration_beats * BEAT, sr, velocity)
+        mix_at(out, n, offset)
+    return out
 
-def write_section(prog, n_bars, with_piano_arp=True, with_piano_slow=False,
-                  with_cello=True, cello_gritty=False,
-                  with_bass=False, with_pad=True, pad_dissonant=False,
-                  with_drums=False, drums_chaotic=False,
-                  piano_amp=0.22, cello_amp=0.35, bass_amp=0.30, pad_amp=0.12):
-    global pos
-    for i, chord in enumerate(prog[:n_bars]):
-        bar_samples = bars_to_samples(1)
-        bar_start = pos
+def cello_chord(chord_name, duration_beats, sr=SAMPLE_RATE, velocity=0.4, dissonant=False):
+    """Violoncelle sur la note fondamentale + quinte"""
+    freqs = CHORDS[chord_name]
+    total = int(duration_beats * BEAT * sr)
+    out = np.zeros(total)
+    # Fondamentale une octave en dessous
+    c = cello_tone(freqs[0] / 2, duration_beats * BEAT, sr, velocity)
+    mix_at(out, c, 0)
+    if len(freqs) > 2:
+        c2 = cello_tone(freqs[2] / 2, duration_beats * BEAT, sr, velocity * 0.6)
+        mix_at(out, c2, 0)
+    return out
 
-        # Piano arpège
-        if with_piano_arp:
-            p = piano_arpeggio(chord, BAR, amp=piano_amp)
-            mix_at(song, p, bar_start)
+def bass_note(chord_name, duration_beats, sr=SAMPLE_RATE, velocity=0.5):
+    freq = CHORDS[chord_name][0] / 2
+    return soft_bass(freq, duration_beats * BEAT, sr, velocity)
 
-        # Piano lent
-        if with_piano_slow:
-            p = piano_slow(chord, BAR, amp=piano_amp)
-            mix_at(song, p, bar_start)
+def pad_chord(chord_name, duration_beats, sr=SAMPLE_RATE, velocity=0.3, dissonant=False):
+    freqs = CHORDS[chord_name]
+    total = int(duration_beats * BEAT * sr)
+    out = np.zeros(total)
+    for freq in freqs:
+        p = warm_pad(freq / 2, duration_beats * BEAT, sr, velocity, dissonant)
+        mix_at(out, p, 0)
+    return out
 
-        # Violoncelle (note fondamentale de l'accord)
+def human_beat(pattern_beats, sr=SAMPLE_RATE, chaotic=False):
+    """Batterie acoustique humaine avec micro-variations de timing"""
+    total = int(pattern_beats * BEAT * sr)
+    out = np.zeros(total)
+    beat_samples = int(BEAT * sr)
+    half_beat = beat_samples // 2
+    
+    for b in range(pattern_beats):
+        # Micro-variation humaine de timing
+        human_offset = int(np.random.uniform(-0.015, 0.015) * sr)
+        
+        # Kick sur temps 1 et 3
+        if b % 4 == 0 or b % 4 == 2:
+            pos = b * beat_samples + human_offset
+            if 0 <= pos < total:
+                mix_at(out, soft_kick(), pos)
+        
+        # Snare sur temps 2 et 4
+        if b % 4 == 1 or b % 4 == 3:
+            pos = b * beat_samples + human_offset
+            if 0 <= pos < total:
+                mix_at(out, soft_snare(), pos)
+        
+        # Hihat brossé sur chaque demi-temps
+        for h in range(2):
+            if chaotic and np.random.random() > 0.5:
+                continue
+            pos = b * beat_samples + h * half_beat + int(np.random.uniform(-0.01, 0.01) * sr)
+            if 0 <= pos < total:
+                mix_at(out, brush_hihat(), pos)
+    
+    return out
+
+# ============================================================
+# COMPOSITION COMPLÈTE
+# ============================================================
+
+sr = SAMPLE_RATE
+progression_verse = ['Dm', 'Bb', 'F', 'C']
+progression_chorus = ['Bb', 'F', 'C', 'Dm']
+progression_bridge = ['Gm', 'Dm', 'Bb', 'A']
+
+def section(chords_list, beats_each=4, with_bass=False, with_cello=True,
+            with_beat=False, arp=True, dissonant=False, chaotic=False, velocity_scale=1.0):
+    total_beats = len(chords_list) * beats_each
+    total_samples = int(total_beats * BEAT * sr)
+    out = np.zeros(total_samples)
+    
+    for i, chord in enumerate(chords_list):
+        pos = int(i * beats_each * BEAT * sr)
+        
+        # Piano arpège ou accord
+        if arp:
+            p = arpeggio(chord, beats_each, sr, 0.45 * velocity_scale)
+        else:
+            p = chord_piano(chord, beats_each, sr, 0.4 * velocity_scale)
+        mix_at(out, p, pos)
+        
+        # Violoncelle
         if with_cello:
-            root_f = CHORDS[chord][0] / 2  # une octave en dessous
-            c = cello(root_f, BAR, amp=cello_amp, gritty=cello_gritty)
-            mix_at(song, c, bar_start)
-
+            c = cello_chord(chord, beats_each, sr, 0.4 * velocity_scale, dissonant)
+            mix_at(out, c, pos)
+        
         # Basse
         if with_bass:
-            root_f = CHORDS[chord][0] / 2
-            b = bass_note(root_f, BAR * 0.9, amp=bass_amp)
-            mix_at(song, b, bar_start)
-
+            b = bass_note(chord, beats_each, sr, 0.45 * velocity_scale)
+            mix_at(out, b, pos)
+        
         # Pad
-        if with_pad:
-            p = pad_chord(chord, BAR, amp=pad_amp, dissonant=pad_dissonant)
-            mix_at(song, p, bar_start)
+        p2 = pad_chord(chord, beats_each, sr, 0.25 * velocity_scale, dissonant)
+        mix_at(out, p2, pos)
+    
+    # Batterie
+    if with_beat:
+        beat_track = human_beat(total_beats, sr, chaotic)
+        mix_at(out, beat_track, 0)
+    
+    return out
 
-        # Batterie
-        if with_drums:
-            # Kick sur les temps 1 et 3
-            for beat_i in [0, 2]:
-                bp = bar_start + int(beat_i * BEAT * SAMPLE_RATE)
-                k = kick()
-                mix_at(song, k, bp)
-            # Snare sur les temps 2 et 4
-            for beat_i in [1, 3]:
-                bp = bar_start + int(beat_i * BEAT * SAMPLE_RATE)
-                s = snare()
-                mix_at(song, s, bp)
-            # Hihat sur les 8ths
-            for beat_i in [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5]:
-                bp = bar_start + int(beat_i * BEAT * SAMPLE_RATE)
-                h = hihat()
-                mix_at(song, h, bp)
+# --- INTRO (8 beats) : piano seul + violoncelle ---
+intro = section(['Dm', 'Bb'], beats_each=4, with_cello=True, arp=True, velocity_scale=0.7)
 
-            if drums_chaotic:
-                # Kicks supplémentaires irréguliers
-                for beat_i in [0.25, 1.75, 2.25, 3.75]:
-                    bp = bar_start + int(beat_i * BEAT * SAMPLE_RATE)
-                    k = kick(amp=0.35)
-                    mix_at(song, k, bp)
+# --- COUPLET 1 (32 beats) : piano arpège + violoncelle discret ---
+verse1_chords = ['Dm','Bb','F','C', 'Dm','Bb','F','C']
+verse1 = section(verse1_chords, beats_each=4, with_cello=True, arp=True, velocity_scale=0.8)
 
-        pos += bar_samples
+# --- REFRAIN 1 (32 beats) : tout entre, plus lourd ---
+chorus1_chords = ['Bb','F','C','Dm', 'Bb','F','C','Dm']
+chorus1 = section(chorus1_chords, beats_each=4, with_bass=True, with_cello=True,
+                  with_beat=True, arp=False, velocity_scale=1.0)
 
-# ─── INTRO (4 mesures) ────────────────────────────────────────────────────────
-# Piano seul, puis violoncelle entre
-write_section(PROG_INTRO, 4,
-              with_piano_arp=True, piano_amp=0.18,
-              with_cello=True, cello_amp=0.20,
-              with_bass=False, with_pad=True, pad_amp=0.07,
-              with_drums=False)
+# --- COUPLET 2 (32 beats) : piano + basse discrète ---
+verse2_chords = ['Dm','Bb','F','C', 'Dm','Bb','F','C']
+verse2 = section(verse2_chords, beats_each=4, with_bass=True, with_cello=True,
+                 arp=True, velocity_scale=0.85)
 
-# ─── COUPLET 1 (8 mesures) ────────────────────────────────────────────────────
-write_section(PROG_VERSE, 8,
-              with_piano_arp=True, piano_amp=0.22,
-              with_cello=True, cello_amp=0.28,
-              with_bass=False, with_pad=True, pad_amp=0.09,
-              with_drums=False)
+# --- PRÉ-REFRAIN (20 beats) : violoncelle grinçant, tension ---
+pre_chorus_chords = ['Bb','F','C','Dm', 'Gm']
+pre_chorus = section(pre_chorus_chords, beats_each=4, with_bass=True, with_cello=True,
+                     arp=True, dissonant=True, velocity_scale=0.9)
 
-# ─── REFRAIN 1 (8 mesures) ────────────────────────────────────────────────────
-write_section(PROG_CHORUS, 8,
-              with_piano_arp=True, piano_amp=0.20,
-              with_cello=True, cello_amp=0.32,
-              with_bass=True, bass_amp=0.28,
-              with_pad=True, pad_amp=0.11,
-              with_drums=True)
+# --- REFRAIN 2 (32 beats) : massif et tragique ---
+chorus2_chords = ['Bb','F','C','Dm', 'Bb','F','C','Dm']
+chorus2 = section(chorus2_chords, beats_each=4, with_bass=True, with_cello=True,
+                  with_beat=True, arp=False, dissonant=False, velocity_scale=1.15)
 
-# ─── COUPLET 2 (8 mesures) ────────────────────────────────────────────────────
-# Redescend : piano + basse discrète
-write_section(PROG_VERSE, 8,
-              with_piano_arp=True, piano_amp=0.20,
-              with_cello=True, cello_amp=0.22,
-              with_bass=True, bass_amp=0.16,
-              with_pad=True, pad_amp=0.08,
-              with_drums=False)
+# --- PONT (32 beats) : chaotique, dissonant ---
+bridge_chords = ['Gm','Dm','Bb','A', 'Gm','Dm','Bb','A']
+bridge = section(bridge_chords, beats_each=4, with_bass=True, with_cello=True,
+                 with_beat=True, arp=True, dissonant=True, chaotic=True, velocity_scale=1.1)
 
-# ─── PRÉ-REFRAIN (8 mesures) ──────────────────────────────────────────────────
-# Violoncelle grinçant, tension monte
-write_section(PROG_PRE, 8,
-              with_piano_arp=True, piano_amp=0.21,
-              with_cello=True, cello_gritty=True, cello_amp=0.30,
-              with_bass=True, bass_amp=0.20,
-              with_pad=True, pad_dissonant=True, pad_amp=0.10,
-              with_drums=False)
+# --- REFRAIN FINAL (32 beats) ---
+chorus3_chords = ['Bb','F','C','Dm', 'Bb','F','C','Dm']
+chorus3 = section(chorus3_chords, beats_each=4, with_bass=True, with_cello=True,
+                  with_beat=True, arp=False, velocity_scale=1.1)
 
-# ─── REFRAIN 2 (8 mesures) ────────────────────────────────────────────────────
-# Tous les instruments, massif et tragique
-write_section(PROG_CHORUS, 8,
-              with_piano_arp=True, piano_amp=0.22,
-              with_cello=True, cello_amp=0.38,
-              with_bass=True, bass_amp=0.32,
-              with_pad=True, pad_dissonant=True, pad_amp=0.13,
-              with_drums=True)
+# --- OUTRO (24 beats) : piano seul, hésitant, fade out ---
+outro_chords = ['Dm','Bb','F','C', 'Gm','C']
+outro_raw = section(outro_chords, beats_each=4, with_cello=True, arp=True, velocity_scale=0.6)
+# Fade out progressif
+fade = np.linspace(1.0, 0.0, len(outro_raw)) ** 1.5
+outro = outro_raw * fade
 
-# ─── PONT (8 mesures) ─────────────────────────────────────────────────────────
-# Rythme chaotique, dissonance, sons superposés
-write_section(PROG_BRIDGE, 8,
-              with_piano_arp=True, piano_amp=0.19,
-              with_cello=True, cello_gritty=True, cello_amp=0.35,
-              with_bass=True, bass_amp=0.28,
-              with_pad=True, pad_dissonant=True, pad_amp=0.12,
-              with_drums=True, drums_chaotic=True)
+# ============================================================
+# ASSEMBLAGE FINAL
+# ============================================================
+full_song = np.concatenate([intro, verse1, chorus1, verse2, pre_chorus,
+                             chorus2, bridge, chorus3, outro])
 
-# ─── REFRAIN FINAL (8 mesures) ────────────────────────────────────────────────
-write_section(PROG_CHORUS, 8,
-              with_piano_arp=True, piano_amp=0.22,
-              with_cello=True, cello_amp=0.38,
-              with_bass=True, bass_amp=0.32,
-              with_pad=True, pad_dissonant=False, pad_amp=0.13,
-              with_drums=True)
+# Normalisation douce (pas de clipping)
+max_val = np.max(np.abs(full_song))
+if max_val > 0:
+    full_song = full_song / max_val * 0.88
 
-# ─── OUTRO (8 mesures) ────────────────────────────────────────────────────────
-# Tempête s'arrête : piano lent hésitant + violoncelle qui s'éteint
-write_section(PROG_OUTRO, 8,
-              with_piano_arp=False, with_piano_slow=True, piano_amp=0.25,
-              with_cello=True, cello_amp=0.28,
-              with_bass=False,
-              with_pad=True, pad_amp=0.06,
-              with_drums=False)
+# Légère compression douce pour humaniser
+threshold = 0.6
+ratio = 3.0
+mask = np.abs(full_song) > threshold
+full_song[mask] = np.sign(full_song[mask]) * (threshold + (np.abs(full_song[mask]) - threshold) / ratio)
 
-# ─── Fade out final (dernières 8 mesures) ─────────────────────────────────────
-fade_start = bars_to_samples(total_bars - 8)
-fade_len = bars_to_samples(8)
-fade_env = np.linspace(1, 0, fade_len)
-song[fade_start:fade_start+fade_len] *= fade_env
+# Ré-normalisation
+full_song = full_song / np.max(np.abs(full_song)) * 0.9
 
-# ─── Normalisation ────────────────────────────────────────────────────────────
-peak = np.max(np.abs(song))
-if peak > 0:
-    song = song / peak * 0.92
+# Conversion en 16-bit
+audio_int = (full_song * 32767).astype(np.int16)
 
-# ─── Export WAV ───────────────────────────────────────────────────────────────
-output_path = "/home/user/la_guerre_en_moi.wav"
-song_int = (song * 32767).astype(np.int16)
-
-with wave.open(output_path, 'w') as wf:
+# Sauvegarde WAV
+with wave.open('la_guerre_en_moi.wav', 'w') as wf:
     wf.setnchannels(1)
     wf.setsampwidth(2)
     wf.setframerate(SAMPLE_RATE)
-    wf.writeframes(song_int.tobytes())
+    wf.writeframes(audio_int.tobytes())
 
-print(f"✅ Fichier sauvegardé : {output_path}")
-print(f"⏱️  Durée : {len(song)/SAMPLE_RATE:.1f}s ({len(song)/SAMPLE_RATE/60:.2f} min)")
+duration_sec = len(full_song) / SAMPLE_RATE
+print(f"✅ Fichier généré : {duration_sec:.1f} secondes ({duration_sec/60:.1f} min)")
+print(f"   Sections : Intro + V1 + Ch1 + V2 + Pre + Ch2 + Bridge + Ch3 + Outro")
 
