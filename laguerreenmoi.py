@@ -1,340 +1,270 @@
 
 import numpy as np
 import wave
-import struct
 
-# ── paramètres globaux ──────────────────────────────────────────────────────
-SR   = 44100   # sample rate
-BPM  = 76      # tempo lent, introspectif
-BEAT = 60 / BPM
+SAMPLE_RATE = 44100
+BPM = 70
+BEAT = 60.0 / BPM
+BAR  = BEAT * 4
 
-def freq(note, octave=4):
-    """Convertit une note en fréquence Hz (tempérament égal, A4=440)."""
-    notes = {'C':0,'C#':1,'Db':1,'D':2,'D#':3,'Eb':3,'E':4,'F':5,
-             'F#':6,'Gb':6,'G':7,'G#':8,'Ab':8,'A':9,'A#':10,'Bb':10,'B':11}
-    semitones = (octave - 4) * 12 + notes[note] - 9
-    return 440.0 * (2 ** (semitones / 12))
+NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
 
-def sine(f, dur, vol=0.5):
-    t = np.linspace(0, dur, int(SR * dur), endpoint=False)
-    return (vol * np.sin(2 * np.pi * f * t)).astype(np.float32)
+def freq(note, octave):
+    n = NOTE_NAMES.index(note)
+    midi = (octave + 1) * 12 + n
+    return 440.0 * (2 ** ((midi - 69) / 12.0))
 
-def square(f, dur, vol=0.3):
-    t = np.linspace(0, dur, int(SR * dur), endpoint=False)
-    return (vol * np.sign(np.sin(2 * np.pi * f * t))).astype(np.float32)
+CHORDS = {
+    'Dm': [freq('D',4), freq('F',4), freq('A',4)],
+    'Bb': [freq('A#',3), freq('D',4), freq('F',4)],
+    'F':  [freq('F',3), freq('A',3), freq('C',4)],
+    'C':  [freq('C',4), freq('E',4), freq('G',4)],
+    'Gm': [freq('G',3), freq('A#',3), freq('D',4)],
+    'A':  [freq('A',3), freq('C#',4), freq('E',4)],
+}
 
-def sawtooth(f, dur, vol=0.25):
-    t = np.linspace(0, dur, int(SR * dur), endpoint=False)
-    return (vol * (2 * (t * f - np.floor(t * f + 0.5)))).astype(np.float32)
+def sine(f, dur, amp=0.5):
+    n = max(1, int(SAMPLE_RATE * dur))
+    t = np.linspace(0, dur, n, False)
+    return amp * np.sin(2*np.pi*f*t)
 
-def pad(f, dur, vol=0.18):
-    """Pad doux : somme de sinus légèrement désaccordés."""
-    t = np.linspace(0, dur, int(SR * dur), endpoint=False)
-    w = (np.sin(2*np.pi*f*t) + 0.6*np.sin(2*np.pi*f*1.005*t)
-         + 0.4*np.sin(2*np.pi*f*0.995*t))
-    return (vol * w / 2).astype(np.float32)
-
-def adsr(sig, a=0.08, d=0.1, s=0.75, r=0.15):
-    n = len(sig)
-    env = np.ones(n, dtype=np.float32)
-    ai = int(a * SR); di = int(d * SR); ri = int(r * SR)
-    si = n - ai - di - ri
-    if ai > 0: env[:ai] = np.linspace(0, 1, ai)
-    if di > 0: env[ai:ai+di] = np.linspace(1, s, di)
-    if si > 0: env[ai+di:ai+di+si] = s
-    if ri > 0: env[ai+di+si:] = np.linspace(s, 0, len(env[ai+di+si:]))
-    return sig * env
+def sawtooth(f, dur, amp=0.3):
+    n = max(1, int(SAMPLE_RATE * dur))
+    t = np.linspace(0, dur, n, False)
+    return amp * (2*(t*f - np.floor(t*f + 0.5)))
 
 def silence(dur):
-    return np.zeros(int(SR * dur), dtype=np.float32)
+    return np.zeros(max(1, int(SAMPLE_RATE * dur)))
 
-def mix(*tracks):
-    """Mixe plusieurs pistes de même longueur."""
-    length = max(len(t) for t in tracks)
-    out = np.zeros(length, dtype=np.float32)
-    for t in tracks:
-        out[:len(t)] += t
-    return np.clip(out, -1, 1)
+def adsr(sig, a=0.05, d=0.1, s_level=0.7, r=0.15):
+    n = len(sig)
+    if n == 0:
+        return sig
+    na = max(1, min(int(a * SAMPLE_RATE), n))
+    nd = max(1, min(int(d * SAMPLE_RATE), n - na))
+    nr = max(1, min(int(r * SAMPLE_RATE), n - na - nd))
+    ns = max(0, n - na - nd - nr)
+    env = np.concatenate([
+        np.linspace(0, 1, na),
+        np.linspace(1, s_level, nd),
+        np.full(ns, s_level),
+        np.linspace(s_level, 0, nr)
+    ])
+    env = env[:n]
+    if len(env) < n:
+        env = np.concatenate([env, np.zeros(n - len(env))])
+    return sig * env
 
-def overlay(base, layer, start_sec):
-    """Superpose `layer` sur `base` à partir de `start_sec`."""
-    s = int(start_sec * SR)
-    end = s + len(layer)
-    if end > len(base):
-        base = np.concatenate([base, np.zeros(end - len(base), dtype=np.float32)])
-    base[s:end] += layer
-    return base
+def mix_at(buf, sig, pos):
+    end = pos + len(sig)
+    if pos >= len(buf):
+        return
+    if end > len(buf):
+        sig = sig[:len(buf) - pos]
+    buf[pos:pos + len(sig)] += sig
 
-# ── Gamme : Ré mineur naturel (D E F G A Bb C) ─────────────────────────────
-# Accords (notes jouées ensemble comme pad)
-def chord(notes_list, dur, vol=0.12):
-    sig = silence(dur)
-    for n, o in notes_list:
-        sig = mix(sig, adsr(pad(freq(n, o), dur, vol)))
-    return sig
+# ── Instruments ──────────────────────────────────────────────────────────────
 
-Dm  = [('D',3),('F',3),('A',3)]
-Bb  = [('Bb',2),('D',3),('F',3)]
-F   = [('F',2),('A',2),('C',3)]
-C   = [('C',3),('E',3),('G',3)]
-Am  = [('A',2),('C',3),('E',3)]
-Gm  = [('G',2),('Bb',2),('D',3)]
+def piano_arpeggio(chord_name, dur, amp=0.22):
+    notes = CHORDS[chord_name]
+    notes_ext = [n / 2 for n in notes] + notes + [n * 2 for n in notes[:2]]
+    note_dur = BEAT / 3
+    buf = []
+    t = 0.0
+    idx = 0
+    while t < dur - 0.001:
+        nd = min(note_dur, dur - t)
+        if nd < 0.005:
+            break
+        s = sine(notes_ext[idx % len(notes_ext)], nd, amp)
+        s = adsr(s, a=0.01, d=0.04, s_level=0.6, r=0.08)
+        buf.append(s)
+        t += note_dur
+        idx += 1
+    if not buf:
+        return silence(dur)
+    return np.concatenate(buf)[:int(SAMPLE_RATE * dur)]
 
-# Progression principale : Dm - Bb - F - C  (×2 = 8 mesures)
-def prog_chords(reps=2):
-    seq = []
-    for _ in range(reps):
-        for ch in [Dm, Bb, F, C]:
-            seq.append(chord(ch, BEAT * 4, vol=0.13))
-    return np.concatenate(seq)
+def piano_slow(chord_name, dur, amp=0.28):
+    notes = CHORDS[chord_name]
+    note_dur = BEAT
+    buf = []
+    t = 0.0
+    idx = 0
+    while t < dur - 0.001:
+        nd = min(note_dur * 0.85, dur - t)
+        if nd < 0.01:
+            break
+        s = sine(notes[idx % len(notes)], nd, amp)
+        s = adsr(s, a=0.03, d=0.1, s_level=0.65, r=0.2)
+        buf.append(s)
+        gap = min(note_dur * 0.15, dur - t - nd)
+        if gap > 0:
+            buf.append(silence(gap))
+        t += note_dur
+        idx += 1
+    if not buf:
+        return silence(dur)
+    return np.concatenate(buf)[:int(SAMPLE_RATE * dur)]
 
-# ── Mélodie (piano/lead) ────────────────────────────────────────────────────
-def melody_phrase(pattern):
-    """pattern = liste de (note, octave, beats) ou ('R', _, beats) pour silence."""
-    out = []
-    for item in pattern:
-        n, o, b = item
-        dur = BEAT * b
-        if n == 'R':
-            out.append(silence(dur))
-        else:
-            s = adsr(sine(freq(n, o), dur, vol=0.35), a=0.04, d=0.08, s=0.7, r=0.12)
-            out.append(s)
-    return np.concatenate(out)
+def cello_note(f, dur, amp=0.35, gritty=False):
+    n = max(1, int(SAMPLE_RATE * dur))
+    t = np.linspace(0, dur, n, False)
+    sig = amp * (
+        0.6 * np.sin(2*np.pi*f*t) +
+        0.25 * np.sin(2*np.pi*f*2*t) +
+        0.10 * np.sin(2*np.pi*f*3*t) +
+        0.05 * np.sin(2*np.pi*f*4*t)
+    )
+    if gritty:
+        sig += 0.04 * np.sign(sig) * np.abs(sig)**0.5
+    vibrato = 1 + 0.008 * np.sin(2*np.pi*4.5*t)
+    sig = sig * vibrato
+    return adsr(sig, a=0.3, d=0.2, s_level=0.8, r=0.4)
 
-# Couplet 1 – mélodie douce, descendante, introspective
-verse1_mel = melody_phrase([
-    ('D',5,1),('C',5,1),('A',4,1),('F',4,1),
-    ('G',4,1),('F',4,1),('E',4,1),('R','_',1),
-    ('D',5,1),('C',5,0.5),('Bb',4,0.5),('A',4,1),('G',4,1),
-    ('F',4,1.5),('E',4,0.5),('R','_',1),
-    ('A',4,1),('Bb',4,1),('C',5,1),('D',5,1),
-    ('C',5,1),('A',4,1),('G',4,1),('R','_',1),
-    ('F',4,1),('G',4,1),('A',4,1),('C',5,1),
-    ('Bb',4,1.5),('A',4,0.5),('G',4,1),('R','_',1),
-])
+def bass_note(f, dur, amp=0.30):
+    sig = sawtooth(f / 2, dur, amp)
+    return adsr(sig, a=0.02, d=0.08, s_level=0.7, r=0.1)
 
-# Refrain – plus intense, montée émotionnelle
-chorus_mel = melody_phrase([
-    ('F',5,1),('E',5,0.5),('D',5,0.5),('C',5,1),('Bb',4,1),
-    ('A',4,1),('R','_',1),
-    ('G',4,1),('A',4,1),('Bb',4,1),('C',5,1),
-    ('D',5,1),('C',5,1),('Bb',4,1),('R','_',1),
-    ('A',4,1),('Bb',4,1),('C',5,1),('D',5,1),
-    ('E',5,1),('D',5,1),('C',5,1),('R','_',1),
-    ('D',5,2),('C',5,1),('Bb',4,1),
-    ('A',4,2),('G',4,1),('F',4,1),
-])
+def pad_chord(chord_name, dur, amp=0.12, dissonant=False):
+    n = max(1, int(SAMPLE_RATE * dur))
+    t = np.linspace(0, dur, n, False)
+    sig = np.zeros(n)
+    for i, nf in enumerate(CHORDS[chord_name]):
+        wave_ = amp * np.sin(2*np.pi*nf*t + i*0.15)
+        if dissonant:
+            wave_ += (amp * 0.3) * np.sin(2*np.pi*nf*1.004*t)
+        sig += wave_
+    return adsr(sig, a=0.4, d=0.3, s_level=0.6, r=0.5)
 
-# Pont – tendu, haché
-bridge_mel = melody_phrase([
-    ('D',5,0.5),('R','_',0.5),('D',5,0.5),('R','_',0.5),
-    ('C',5,1),('Bb',4,1),('A',4,1),
-    ('G',4,0.5),('R','_',0.5),('G',4,0.5),('R','_',0.5),
-    ('A',4,1),('Bb',4,1),('C',5,1),
-    ('D',5,1),('C',5,1),('Bb',4,1),('A',4,1),
-    ('G',4,2),('R','_',2),
-    ('F',4,1),('G',4,1),('A',4,1),('Bb',4,1),
-    ('C',5,2),('D',5,2),
-])
+def kick(amp=0.55):
+    dur = 0.25
+    n = int(SAMPLE_RATE * dur)
+    t = np.linspace(0, dur, n, False)
+    f_env = 180 * np.exp(-30*t)
+    sig = amp * np.sin(2*np.pi*f_env*t)
+    return adsr(sig, a=0.002, d=0.08, s_level=0.0, r=0.05)
 
-# Outro – épuisé, descendant
-outro_mel = melody_phrase([
-    ('D',5,1.5),('C',5,0.5),('Bb',4,1),('A',4,1),
-    ('G',4,2),('R','_',2),
-    ('F',4,1),('G',4,1),('A',4,1),('Bb',4,1),
-    ('A',4,2),('G',4,2),
-    ('F',4,1),('E',4,1),('D',4,1),('C',4,1),
-    ('D',4,4),
-])
+def snare(amp=0.35):
+    dur = 0.18
+    n = int(SAMPLE_RATE * dur)
+    t = np.linspace(0, dur, n, False)
+    noise = np.random.randn(n) * amp * np.exp(-18*t)
+    tone  = 0.15 * np.sin(2*np.pi*200*t) * np.exp(-25*t)
+    return noise + tone
 
-# ── Basse ───────────────────────────────────────────────────────────────────
-def bass_line(pattern):
-    out = []
-    for n, o, b in pattern:
-        dur = BEAT * b
-        if n == 'R':
-            out.append(silence(dur))
-        else:
-            s = adsr(sawtooth(freq(n, o), dur, vol=0.28), a=0.02, d=0.05, s=0.8, r=0.1)
-            out.append(s)
-    return np.concatenate(out)
+def hihat(amp=0.15):
+    dur = 0.08
+    n = int(SAMPLE_RATE * dur)
+    t = np.linspace(0, dur, n, False)
+    return np.random.randn(n) * amp * np.exp(-40*t)
 
-bass_v = bass_line([
-    ('D',2,2),('R','_',0.5),('D',2,0.5),('D',2,1),
-    ('Bb',1,2),('R','_',0.5),('Bb',1,0.5),('F',2,1),
-    ('F',2,2),('R','_',0.5),('F',2,0.5),('C',2,1),
-    ('C',2,2),('R','_',0.5),('C',2,0.5),('G',2,1),
-    ('D',2,2),('R','_',0.5),('D',2,0.5),('D',2,1),
-    ('Bb',1,2),('R','_',0.5),('Bb',1,0.5),('F',2,1),
-    ('F',2,2),('R','_',0.5),('F',2,0.5),('C',2,1),
-    ('C',2,2),('R','_',0.5),('C',2,0.5),('G',2,1),
-])
+# ── Construction ─────────────────────────────────────────────────────────────
 
-bass_c = bass_line([
-    ('D',2,1.5),('R','_',0.5),('D',2,1),('F',2,1),
-    ('Bb',1,1.5),('R','_',0.5),('Bb',1,1),('D',2,1),
-    ('F',2,1.5),('R','_',0.5),('F',2,1),('A',2,1),
-    ('C',2,1.5),('R','_',0.5),('C',2,1),('E',2,1),
-    ('D',2,1.5),('R','_',0.5),('D',2,1),('F',2,1),
-    ('Bb',1,1.5),('R','_',0.5),('Bb',1,1),('D',2,1),
-    ('F',2,1.5),('R','_',0.5),('F',2,1),('A',2,1),
-    ('C',2,2),('G',2,2),
-])
+PROG_INTRO  = ['Dm','Bb','F','C']
+PROG_VERSE  = ['Dm','Bb','F','C','Dm','Bb','Gm','C']
+PROG_CHORUS = ['Bb','F','C','Dm','Bb','F','Gm','C']
+PROG_PRE    = ['Bb','F','C','Dm','Bb','F','Gm','C']
+PROG_BRIDGE = ['Gm','Dm','Bb','F','C','Dm','Bb','A']
+PROG_OUTRO  = ['Dm','Bb','F','C','Gm','Bb','C','Dm']
 
-# ── Batterie simple ─────────────────────────────────────────────────────────
-def kick(dur=0.15, vol=0.6):
-    t = np.linspace(0, dur, int(SR * dur))
-    f0 = 150 * np.exp(-30 * t)
-    env = np.exp(-20 * t)
-    return (vol * env * np.sin(2 * np.pi * f0 * t)).astype(np.float32)
+sections_bars = [4, 8, 8, 8, 8, 8, 8, 8, 8]
+total_bars = sum(sections_bars)
+total_samples = int(SAMPLE_RATE * BAR * total_bars)
+song = np.zeros(total_samples)
 
-def snare(dur=0.2, vol=0.4):
-    t = np.linspace(0, dur, int(SR * dur))
-    noise = np.random.randn(len(t)).astype(np.float32)
-    env = np.exp(-18 * t)
-    tone = np.sin(2 * np.pi * 200 * t)
-    return (vol * env * (0.5 * noise + 0.5 * tone)).astype(np.float32)
+print(f"Durée : {total_bars * BAR:.1f}s = {total_bars * BAR / 60:.2f} min")
 
-def hihat(dur=0.05, vol=0.15):
-    t = np.linspace(0, dur, int(SR * dur))
-    noise = np.random.randn(len(t)).astype(np.float32)
-    env = np.exp(-60 * t)
-    return (vol * env * noise).astype(np.float32)
+pos = 0
 
-def build_drums(measures=8, pattern='verse'):
-    """Construit une piste de batterie sur `measures` mesures de 4 temps."""
-    total = int(SR * BEAT * 4 * measures)
-    track = np.zeros(total, dtype=np.float32)
-    b = BEAT
-    for m in range(measures):
-        off = m * 4 * b
-        if pattern == 'verse':
-            # kick sur 1 et 3, snare sur 2 et 4, hihat sur chaque temps
-            for beat_pos in [0, 2]:
-                s = int((off + beat_pos * b) * SR)
-                k = kick(); track[s:s+len(k)] += k
-            for beat_pos in [1, 3]:
-                s = int((off + beat_pos * b) * SR)
-                sn = snare(); track[s:s+len(sn)] += sn
-            for beat_pos in [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5]:
-                s = int((off + beat_pos * b) * SR)
-                hh = hihat(); track[s:s+len(hh)] += hh
-        elif pattern == 'chorus':
-            # plus énergique : kick sur 1, 2.5, 3
-            for beat_pos in [0, 2.5, 3]:
-                s = int((off + beat_pos * b) * SR)
-                k = kick(vol=0.7); track[s:s+len(k)] += k
-            for beat_pos in [1, 3]:
-                s = int((off + beat_pos * b) * SR)
-                sn = snare(vol=0.5); track[s:s+len(sn)] += sn
-            for beat_pos in [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75,
-                              2, 2.25, 2.5, 2.75, 3, 3.25, 3.5, 3.75]:
-                s = int((off + beat_pos * b) * SR)
-                hh = hihat(vol=0.12); track[s:s+len(hh)] += hh
-        elif pattern == 'bridge':
-            for beat_pos in [0, 1.5, 2, 3.5]:
-                s = int((off + beat_pos * b) * SR)
-                k = kick(vol=0.65); track[s:s+len(k)] += k
-            for beat_pos in [1, 3]:
-                s = int((off + beat_pos * b) * SR)
-                sn = snare(vol=0.45); track[s:s+len(sn)] += sn
-    return track
+def write_section(prog, n_bars,
+                  piano_arp=False, piano_slow_mode=False,
+                  cello=True, cello_gritty=False,
+                  bass=False, pad=True, pad_dis=False,
+                  drums=False, drums_chaos=False,
+                  p_amp=0.22, c_amp=0.35, b_amp=0.30, pad_amp=0.12):
+    global pos
+    bar_samples = int(SAMPLE_RATE * BAR)
+    for i in range(n_bars):
+        chord = prog[i % len(prog)]
+        bs = pos
 
-# ── Assemblage de la chanson ─────────────────────────────────────────────────
-# Structure : Intro | Couplet1 | Refrain | Couplet2 | Pré-refrain | Refrain | Pont | Outro
+        if piano_arp:
+            mix_at(song, piano_arpeggio(chord, BAR, p_amp), bs)
+        if piano_slow_mode:
+            mix_at(song, piano_slow(chord, BAR, p_amp), bs)
+        if cello:
+            rf = CHORDS[chord][0] / 2
+            mix_at(song, cello_note(rf, BAR, c_amp, cello_gritty), bs)
+        if bass:
+            rf = CHORDS[chord][0] / 2
+            mix_at(song, bass_note(rf, BAR * 0.9, b_amp), bs)
+        if pad:
+            mix_at(song, pad_chord(chord, BAR, pad_amp, pad_dis), bs)
+        if drums:
+            for beat_i in [0, 2]:
+                mix_at(song, kick(), bs + int(beat_i * BEAT * SAMPLE_RATE))
+            for beat_i in [1, 3]:
+                mix_at(song, snare(), bs + int(beat_i * BEAT * SAMPLE_RATE))
+            for beat_i in [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5]:
+                mix_at(song, hihat(), bs + int(beat_i * BEAT * SAMPLE_RATE))
+            if drums_chaos:
+                for beat_i in [0.25, 1.75, 2.25, 3.75]:
+                    mix_at(song, kick(0.30), bs + int(beat_i * BEAT * SAMPLE_RATE))
 
-def pad_to(sig, length):
-    if len(sig) >= length: return sig[:length]
-    return np.concatenate([sig, np.zeros(length - len(sig), dtype=np.float32)])
+        pos += bar_samples
 
-def section(mel, bass, chords_sig, drums):
-    length = max(len(mel), len(bass), len(chords_sig), len(drums))
-    return mix(pad_to(mel, length),
-               pad_to(bass, length),
-               pad_to(chords_sig, length),
-               pad_to(drums, length))
+# INTRO
+write_section(PROG_INTRO, 4, piano_arp=True, cello=True, pad=True,
+              p_amp=0.18, c_amp=0.18, pad_amp=0.07)
+# COUPLET 1
+write_section(PROG_VERSE, 8, piano_arp=True, cello=True, pad=True,
+              p_amp=0.22, c_amp=0.28, pad_amp=0.09)
+# REFRAIN 1
+write_section(PROG_CHORUS, 8, piano_arp=True, cello=True, bass=True, pad=True, drums=True,
+              p_amp=0.20, c_amp=0.32, b_amp=0.28, pad_amp=0.11)
+# COUPLET 2
+write_section(PROG_VERSE, 8, piano_arp=True, cello=True, bass=True, pad=True,
+              p_amp=0.20, c_amp=0.22, b_amp=0.16, pad_amp=0.08)
+# PRÉ-REFRAIN
+write_section(PROG_PRE, 8, piano_arp=True, cello=True, cello_gritty=True, bass=True,
+              pad=True, pad_dis=True,
+              p_amp=0.21, c_amp=0.30, b_amp=0.20, pad_amp=0.10)
+# REFRAIN 2
+write_section(PROG_CHORUS, 8, piano_arp=True, cello=True, bass=True, pad=True,
+              pad_dis=True, drums=True,
+              p_amp=0.22, c_amp=0.38, b_amp=0.32, pad_amp=0.13)
+# PONT
+write_section(PROG_BRIDGE, 8, piano_arp=True, cello=True, cello_gritty=True,
+              bass=True, pad=True, pad_dis=True, drums=True, drums_chaos=True,
+              p_amp=0.19, c_amp=0.35, b_amp=0.28, pad_amp=0.12)
+# REFRAIN FINAL
+write_section(PROG_CHORUS, 8, piano_arp=True, cello=True, bass=True, pad=True,
+              drums=True,
+              p_amp=0.22, c_amp=0.38, b_amp=0.32, pad_amp=0.13)
+# OUTRO
+write_section(PROG_OUTRO, 8, piano_slow_mode=True, cello=True, pad=True,
+              p_amp=0.25, c_amp=0.28, pad_amp=0.06)
 
-# Intro (8 mesures, accords + batterie douce)
-intro_dur = BEAT * 4 * 8
-intro_chords = prog_chords(2)
-intro_drums  = build_drums(8, 'verse') * 0.5
-intro_mel    = silence(intro_dur)
-intro_bass   = bass_v
-intro_sec    = section(intro_mel, intro_bass, intro_chords, intro_drums)
+# Fade out sur l'outro
+fade_start = int(SAMPLE_RATE * BAR * (total_bars - 8))
+fade_len   = int(SAMPLE_RATE * BAR * 8)
+song[fade_start:fade_start + fade_len] *= np.linspace(1, 0, fade_len)
 
-# Couplet 1 (8 mesures)
-v1_chords = prog_chords(2)
-v1_drums  = build_drums(8, 'verse')
-v1_sec    = section(verse1_mel, bass_v, v1_chords, v1_drums)
+# Normalisation
+peak = np.max(np.abs(song))
+if peak > 0:
+    song = song / peak * 0.90
 
-# Refrain (8 mesures)
-c_chords  = prog_chords(2)
-c_drums   = build_drums(8, 'chorus')
-c_sec     = section(chorus_mel, bass_c, c_chords, c_drums)
-
-# Couplet 2 (même mélodie que v1 légèrement plus forte)
-v2_sec = section(verse1_mel * 1.05, bass_v, prog_chords(2), build_drums(8, 'verse'))
-
-# Pré-refrain (4 mesures, accords Gm-Am-Bb-C)
-pre_dur = BEAT * 4 * 4
-pre_chords = np.concatenate([chord(Gm, BEAT*4), chord(Am, BEAT*4),
-                              chord(Bb, BEAT*4), chord(C,  BEAT*4)])
-pre_bass = bass_line([
-    ('G',2,2),('R','_',0.5),('G',2,1.5),
-    ('A',2,2),('R','_',0.5),('A',2,1.5),
-    ('Bb',2,2),('R','_',0.5),('Bb',2,1.5),
-    ('C',3,2),('R','_',0.5),('C',3,1.5),
-])
-pre_mel = melody_phrase([
-    ('G',4,1),('A',4,1),('Bb',4,1),('C',5,1),
-    ('A',4,1),('G',4,1),('F',4,1),('R','_',1),
-    ('Bb',4,1),('C',5,1),('D',5,1),('Eb',5,1),
-    ('D',5,1),('C',5,1),('Bb',4,1),('R','_',1),
-])
-pre_drums = build_drums(4, 'verse')
-pre_sec   = section(pre_mel, pre_bass, pre_chords, pre_drums)
-
-# Pont (8 mesures)
-br_chords = prog_chords(2)
-br_drums  = build_drums(8, 'bridge')
-br_sec    = section(bridge_mel, bass_v, br_chords, br_drums)
-
-# Outro (8 mesures, s'estompe)
-out_dur    = BEAT * 4 * 8
-out_chords = prog_chords(2) * 0.8
-out_drums  = build_drums(8, 'verse') * 0.4
-out_sec    = section(outro_mel, bass_v * 0.7, out_chords, out_drums)
-# Fade out progressif
-fade = np.linspace(1, 0, len(out_sec))
-out_sec = (out_sec * fade).astype(np.float32)
-
-# ── Concaténation finale ─────────────────────────────────────────────────────
-song = np.concatenate([
-    intro_sec,   # Intro
-    v1_sec,      # Couplet 1
-    c_sec,       # Refrain
-    v2_sec,      # Couplet 2
-    pre_sec,     # Pré-refrain
-    c_sec,       # Refrain
-    br_sec,      # Pont
-    out_sec,     # Outro
-])
-
-# Normalisation finale
-song = song / np.max(np.abs(song) + 1e-9) * 0.92
-
-# ── Sauvegarde WAV ───────────────────────────────────────────────────────────
-filename = 'la_guerre_en_moi.wav'
-with wave.open(filename, 'w') as wf:
+# Export WAV
+out = "la_guerre_en_moi.wav"
+song_int = (song * 32767).astype(np.int16)
+with wave.open(out, 'w') as wf:
     wf.setnchannels(1)
     wf.setsampwidth(2)
-    wf.setframerate(SR)
-    data = (song * 32767).astype(np.int16)
-    wf.writeframes(data.tobytes())
+    wf.setframerate(SAMPLE_RATE)
+    wf.writeframes(song_int.tobytes())
 
-duration = len(song) / SR
-print(f"✅ Fichier généré : {filename}")
-print(f"⏱️  Durée totale  : {duration:.1f} secondes ({duration/60:.1f} minutes)")
-print(f"🎵  Structure     : Intro → Couplet 1 → Refrain → Couplet 2 → Pré-refrain → Refrain → Pont → Outro")
+print(f"✅ Sauvegardé : {out}")
+print(f"⏱️  Durée : {len(song)/SAMPLE_RATE:.1f}s ({len(song)/SAMPLE_RATE/60:.2f} min)")
 
